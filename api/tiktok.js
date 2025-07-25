@@ -2,35 +2,50 @@
 export default async function handler(req, res) {
   const { username = "mdlawellness", count = 9 } = req.query;
 
-  // 1) fetch profile HTML
-  const htmlRes = await fetch(`https://www.tiktok.com/@${username}`, {
-    headers: { "User-Agent": "Mozilla/5.0" }
-  });
-  const html = await htmlRes.text();
-
-  // 2) extract the JSON blob from <script id="SIGI_STATE">
-  const m = html.match(
-    /<script id="SIGI_STATE" type="application\/json">([^<]+)<\/script>/
+  // 1) fetch the profile HTML (force English so we get the JSON)
+  const profile = await fetch(
+    `https://www.tiktok.com/@${username}?lang=en`,
+    { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } }
   );
-  if (!m) return res.status(500).send("Profile JSON not found");
+  const html = await profile.text();
 
-  const state = JSON.parse(m[1]);
-  const user  = state.UserModule.users[username];
-  if (!user) return res.status(500).send("User data missing");
+  // 2) pull out the SIGI_STATE JSON blob (more permissive regex)
+  const sigiMatch = html.match(
+    /<script[^>]*id=["']SIGI_STATE["'][^>]*>([\s\S]*?)<\/script>/
+  );
+  if (!sigiMatch) {
+    return res
+      .status(500)
+      .send("Profile JSON not found (SIGI_STATE script tag)");
+  }
+  let state;
+  try {
+    state = JSON.parse(sigiMatch[1]);
+  } catch (e) {
+    return res.status(500).send("Unable to parse SIGI_STATE JSON");
+  }
 
-  // 3) call TikTok’s own video-list API
+  // 3) extract your user object
+  const user = state?.UserModule?.users?.[username];
+  if (!user) {
+    return res.status(500).send("User data missing in SIGI_STATE");
+  }
+
+  // 4) call TikTok’s own API for the latest posts
   const apiUrl =
-    `https://www.tiktok.com/api/post/item_list/?` +
-    `count=${count}&secUid=${user.secUid}&id=${user.id}` +
+    `https://www.tiktok.com/api/post/item_list/` +
+    `?count=${count}` +
+    `&secUid=${encodeURIComponent(user.secUid)}` +
+    `&id=${encodeURIComponent(user.id)}` +
     `&type=1&cursor=0&aid=1988`;
 
-  const jsonRes = await fetch(apiUrl, {
-    headers: { "User-Agent": "Mozilla/5.0" }
+  const feedRes = await fetch(apiUrl, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
   });
-  const data = await jsonRes.json();
-  const ids  = (data.itemList || []).map(i => i.id);
+  const feedJson = await feedRes.json();
+  const ids = (feedJson.itemList || []).map((item) => item.id);
 
-  // 4) return JSON + CORS
+  // 5) return just the array of IDs with CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   return res.json(ids);
 }

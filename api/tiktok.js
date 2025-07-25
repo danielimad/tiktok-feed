@@ -2,27 +2,28 @@
 export default async function handler(req, res) {
   const { username = "mdlawellness", count = 9 } = req.query;
 
-  // 1) call TikTok's share JSON endpoint
-  const apiUrl = `https://www.tiktok.com/node/share/user/@${username}` +
-                 `?lang=en&count=${count}`;
+  // Call TikWM’s posts API instead of TikTok’s deprecated endpoint
+  const apiUrl = `https://www.tikwm.com/api/user/posts?unique_id=${username}&count=${count}`;
 
   let data;
   try {
     const r = await fetch(apiUrl, {
-      headers: { "User-Agent": "Mozilla/5.0" }
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.tikwm.com",
+        "Accept": "application/json"
+      }
     });
     data = await r.json();
   } catch (e) {
-    return res
-      .status(500)
-      .send("Failed to fetch TikTok share JSON: " + e.message);
+    return res.status(500).send("Failed to fetch TikWM user posts JSON: " + e.message);
   }
 
-  // 2) extract the video IDs
-  const list = data?.body?.itemList || [];
-  const ids = list.map(item => item.id).filter(Boolean);
+  // Extract video IDs from the response
+  const videos = data?.data?.videos || [];
+  const ids = videos.map(video => video.video_id).filter(Boolean);
 
-  // 3) return JSON + CORS
+  // Return JSON with CORS enabled
   res.setHeader("Access-Control-Allow-Origin", "*");
-  return res.status(200).json(ids);
+  return res.status(200).json({ ids });
 }

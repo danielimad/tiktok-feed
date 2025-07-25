@@ -1,37 +1,67 @@
 // pages/api/tiktok.js
 export default async function handler(req, res) {
   const { username = "mdlawellness", count = 9 } = req.query;
+  const profileUrl = `https://www.tiktok.com/@${username}?lang=en`;
 
-  // 1) fetch the profile HTML (force English so we get the JSON)
-  const profile = await fetch(
-    `https://www.tiktok.com/@${username}?lang=en`,
-    { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } }
-  );
-  const html = await profile.text();
+  // 1) fetch profile HTML
+  const htmlRes = await fetch(profileUrl, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+  });
+  const html = await htmlRes.text();
 
-  // 2) pull out the SIGI_STATE JSON blob (more permissive regex)
-  const sigiMatch = html.match(
+  let state = null;
+
+  // 2) Attempt #1: <script id="SIGI_STATE">…</script>
+  const sigiTag = html.match(
     /<script[^>]*id=["']SIGI_STATE["'][^>]*>([\s\S]*?)<\/script>/
   );
-  if (!sigiMatch) {
+  if (sigiTag) {
+    try { state = JSON.parse(sigiTag[1]); }
+    catch (e) { /* parse fail? ignore */ }
+  }
+
+  // 3) Attempt #2: window['SIGI_STATE'] = {…};
+  if (!state) {
+    const winMatch = html.match(
+      /window\['SIGI_STATE'\]\s*=\s*({[\s\S]*?});/
+    );
+    if (winMatch) {
+      try { state = JSON.parse(winMatch[1]); }
+      catch (e) { /* ignore */ }
+    }
+  }
+
+  // 4) Attempt #3: Next.js data blob
+  if (!state) {
+    const nextData = html.match(
+      /<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/
+    );
+    if (nextData) {
+      try {
+        const nd = JSON.parse(nextData[1]);
+        // user info lives under nd.props.pageProps.user; adjust if you find it elsewhere
+        state = nd?.props?.pageProps?.user ? {
+          UserModule: { users: { [username]: nd.props.pageProps.user } }
+        } : null;
+      } catch (e) {}
+    }
+  }
+
+  if (!state) {
     return res
       .status(500)
-      .send("Profile JSON not found (SIGI_STATE script tag)");
-  }
-  let state;
-  try {
-    state = JSON.parse(sigiMatch[1]);
-  } catch (e) {
-    return res.status(500).send("Unable to parse SIGI_STATE JSON");
+      .send("Profile JSON not found (tried SIGI_STATE & Next blob)");
   }
 
-  // 3) extract your user object
-  const user = state?.UserModule?.users?.[username];
+  // 5) grab your user object
+  const user = state.UserModule?.users?.[username];
   if (!user) {
-    return res.status(500).send("User data missing in SIGI_STATE");
+    return res
+      .status(500)
+      .send("User data missing in pulled JSON");
   }
 
-  // 4) call TikTok’s own API for the latest posts
+  // 6) call TikTok’s own feed API
   const apiUrl =
     `https://www.tiktok.com/api/post/item_list/` +
     `?count=${count}` +
@@ -40,12 +70,12 @@ export default async function handler(req, res) {
     `&type=1&cursor=0&aid=1988`;
 
   const feedRes = await fetch(apiUrl, {
-    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
   });
   const feedJson = await feedRes.json();
-  const ids = (feedJson.itemList || []).map((item) => item.id);
+  const ids = (feedJson.itemList || []).map(item => item.id);
 
-  // 5) return just the array of IDs with CORS
+  // 7) return JSON + CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  return res.json(ids);
+  res.status(200).json(ids);
 }
